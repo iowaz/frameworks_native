@@ -900,10 +900,11 @@ protected:
     // Buffers that are successfully dequeued/attached and handed to clients
     std::unordered_set<int> mDequeuedSlots;
 
-    #ifdef ENABLE_MTK_GED_KPI
-    pid_t mPid;
-    bool mIsSurfaceFlinger;
-    #endif
+    // MediaTek GED KPI (libgui/support_mtk_ged_kpi): the producer's pid and whether it is
+    // surfaceflinger. Declared for every build so that all modules see the class layout libgui
+    // was compiled with; only set when connect() comes from EGL.
+    pid_t mPid = -1;
+    bool mIsSurfaceFlinger = false;
 
     // Indicates whether this surface holds the mouse cursor, and subsequently determines whether
     // the GRALLOC_USAGE_CURSOR usage flag should be set on the buffer created when this surface is
