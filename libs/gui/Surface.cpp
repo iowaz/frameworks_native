@@ -1590,7 +1590,7 @@ void Surface::onBufferQueuedLocked(int slot, const sp<Fence>& fence,
     mQueueBufferCondition.broadcast();
 
     #ifdef ENABLE_MTK_GED_KPI
-    if (mGraphicBufferProducer != nullptr && ged_fd >= 0) {
+    if (mGraphicBufferProducer != nullptr && ged_fd >= 0 && mSlots[slot].buffer != nullptr) {
         sp<GraphicBuffer>& gbuf(mSlots[slot].buffer);
         uint64_t uniqueId;
         mGraphicBufferProducer->getUniqueId(&uniqueId);
