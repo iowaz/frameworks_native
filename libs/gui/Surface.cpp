@@ -28,6 +28,7 @@
 #include <thread>
 
 #ifdef ENABLE_MTK_GED_KPI
+#include <errno.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -223,22 +224,20 @@ Surface::Surface(const sp<IGraphicBufferProducer>& bufferProducer, bool controll
     mSurfaceControlHandle = surfaceControlHandle;
 
     #ifdef ENABLE_MTK_GED_KPI
-    if (ged_fd == -1 && doMtkGedKpi == 1) {
-        ALOGE("Opening ged");
-        ged_fd = open("/proc/ged", O_RDONLY);
-        ALOGE("Opening ged ret = %d", ged_fd);
-        {
-        struct GED_BRIDGE_IN_GPU_TIMESTAMP in = {
-            .pid = 0,
-            //.ullWnd = (uint64_t)(intptr_t)this,
-                .ullWnd = 0,
-                .i32FrameID = 0,
-            .fence_fd = 0,
-            .isSF = 0,
-            .QedBuffer_length = 0,
-        };
-        struct GED_BRIDGE_OUT_GPU_TIMESTAMP out;
+    // Open /proc/ged and probe the GED KPI once per process, whichever thread creates the first
+    // Surface. A process that cannot open it sends nothing and does not try again.
+    static std::once_flag sGedOnce;
+    std::call_once(sGedOnce, [] {
+        ged_fd = open("/proc/ged", O_RDONLY | O_CLOEXEC);
+        if (ged_fd < 0) {
+            ALOGI("GED KPI: cannot open /proc/ged (errno %d)", errno);
+            doMtkGedKpi = 0;
+            return;
+        }
+        struct GED_BRIDGE_IN_GPU_TIMESTAMP in;
         memset(&in, 0, sizeof(in));
+        struct GED_BRIDGE_OUT_GPU_TIMESTAMP out;
+        memset(&out, 0, sizeof(out));
         GED_BRIDGE_PACKAGE package = {
             .ui32FunctionID = GED_BRIDGE_IO_GPU_TIMESTAMP,
             .i32Size = sizeof(GED_BRIDGE_PACKAGE),
@@ -247,18 +246,13 @@ Surface::Surface(const sp<IGraphicBufferProducer>& bufferProducer, bool controll
             .pvParamOut = &out,
             .i32OutBufferSize = sizeof(out),
         };
-        if (ged_fd >= 0) {
-            int ret = ioctl(ged_fd, GED_BRIDGE_IO_GPU_TIMESTAMP, &package);
-            ALOGE("First null timestamp ioctl returned %d %d %d", ret, out.eError, out.is_ged_kpi_enabled);
-            if (out.is_ged_kpi_enabled != 1) {
-                ALOGE("is_ged_kpi_enabled reported disabled");
-                doMtkGedKpi = 0;
-            }
-        } else {
-            ALOGE("No /proc/ged");
+        int ret = ioctl(ged_fd, GED_BRIDGE_IO_GPU_TIMESTAMP, &package);
+        ALOGI("GED KPI: probe ioctl returned %d, error %d, enabled %d", ret, out.eError,
+              out.is_ged_kpi_enabled);
+        if (out.is_ged_kpi_enabled != 1) {
+            doMtkGedKpi = 0;
         }
-        }
-    }
+    });
     #endif
 
     IGraphicBufferProducer::SurfaceConfig config;
@@ -2568,18 +2562,19 @@ int Surface::connect(int api, const sp<SurfaceListener>& listener, bool reportBu
             : (ipc != nullptr)?ipc->getCallingPid():-1;
 
         // We've got caller PID. Now checking whether it is surfaceflinger
-        char cmdline[128];
+        char cmdline[128] = {};
         char path[128];
         snprintf(path, sizeof(path)-1, "/proc/%d/cmdline", mPid);
-        int fd = open(path, O_RDONLY);
-        read(fd, cmdline, sizeof(cmdline)-1);
+        int fd = open(path, O_RDONLY | O_CLOEXEC);
+        if (fd >= 0) {
+            read(fd, cmdline, sizeof(cmdline)-1);
+            close(fd);
+        }
         // Normally cmdline is already \0-separated, but well
         for(unsigned i=0; i<sizeof(cmdline); i++)
             if(cmdline[i] == '\n')
                 cmdline[i] = 0;
         cmdline[sizeof(cmdline)-1] = 0;
-
-        close(fd);
 
         // Truncate to last / (also called basename)
         const char *c = strrchr(cmdline, '/');
@@ -2589,10 +2584,10 @@ int Surface::connect(int api, const sp<SurfaceListener>& listener, bool reportBu
             c = cmdline;
         }
         if(strcmp(c, "surfaceflinger") == 0) {
-            ALOGE("is surfaceflinger = 1");
+            ALOGV("GED KPI: producer is surfaceflinger");
             mIsSurfaceFlinger = true;
         } else {
-            ALOGE("is surfaceflinger = 0");
+            ALOGV("GED KPI: producer is not surfaceflinger");
             mIsSurfaceFlinger = false;
         }
     }
